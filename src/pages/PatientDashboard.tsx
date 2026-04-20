@@ -20,6 +20,54 @@ import {
   ShieldCheck,
 } from 'lucide-react'
 
+interface Medication {
+  name: string
+  dose: string
+  usage: string
+  note?: string
+}
+
+interface BoundRegimen {
+  id: string
+  name: string
+  patientName: string
+  patientContact: string
+  medications: Medication[]
+  createdAt: string
+}
+
+const REGIMENS_KEY = 'yaoanxin_regimens'
+
+function readRegimensForPatient(contact: string, name?: string): BoundRegimen[] {
+  try {
+    const raw = window.localStorage.getItem(REGIMENS_KEY)
+    if (!raw) return []
+    const parsed = JSON.parse(raw)
+    if (!Array.isArray(parsed)) return []
+    return parsed
+      .filter((item) => {
+        const contactMatched = item?.patientContact === contact
+        if (!contactMatched) return false
+        if (!name) return true
+        if (!item?.patientName) return true
+        return item.patientName === name
+      })
+      .map((item) => ({
+        id: String(item?.id ?? ''),
+        name: String(item?.name ?? '未命名方案'),
+        patientName: String(item?.patientName ?? ''),
+        patientContact: String(item?.patientContact ?? ''),
+        medications: Array.isArray(item?.medications) ? item.medications : [],
+        createdAt:
+          typeof item?.createdAt === 'string'
+            ? item.createdAt
+            : new Date().toISOString(),
+      }))
+  } catch {
+    return []
+  }
+}
+
 /**  
  * @description 患者端用药中心主页组件。  
  */
@@ -28,6 +76,11 @@ const PatientDashboard: React.FC = () => {
   const navigate = useNavigate()
   const [comingSoonOpen, setComingSoonOpen] = useState(false)
   const [comingSoonText, setComingSoonText] = useState<string | undefined>()
+  const [regimenModalOpen, setRegimenModalOpen] = useState(false)
+  const [activeRegimen, setActiveRegimen] = useState<BoundRegimen | null>(null)
+
+  const myRegimens =
+    user?.contact ? readRegimensForPatient(user.contact, user.name) : []
 
   /**  
    * @description 退出登录处理。  
@@ -41,6 +94,19 @@ const PatientDashboard: React.FC = () => {
   const triggerComingSoon = (featureName: string) => {
     setComingSoonText(`“${featureName}”功能将在正式版本中开放，当前页面仅为前端演示原型。`)
     setComingSoonOpen(true)
+  }
+
+  const handleOpenMyRegimens = () => {
+    if (!user?.contact) {
+      toast.error('当前账号信息异常，无法读取用药清单')
+      return
+    }
+    if (myRegimens.length === 0) {
+      toast.warning('医生暂未为您添加用药方案')
+      return
+    }
+    setActiveRegimen(myRegimens[0])
+    setRegimenModalOpen(true)
   }
 
   return (
@@ -170,7 +236,7 @@ const PatientDashboard: React.FC = () => {
             icon={Pill}
             label="我的用药清单"
             description="查看当前所有药物及用法说明"
-            onClick={() => triggerComingSoon('我的用药清单')}
+            onClick={handleOpenMyRegimens}
           />
           <PatientFeatureButton
             icon={BellRing}
@@ -229,6 +295,75 @@ const PatientDashboard: React.FC = () => {
           '该功能将在正式版本中开放，用于完善患者端用药管理体验。当前页面为前端演示原型。'
         }
       />
+
+      {regimenModalOpen && (
+        <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/40 px-4">
+          <div className="w-full max-w-2xl rounded-2xl bg-white p-6 shadow-2xl">
+            <div className="flex items-center justify-between">
+              <h3 className="text-lg font-semibold text-slate-900">我的用药清单</h3>
+              <button
+                type="button"
+                onClick={() => {
+                  setRegimenModalOpen(false)
+                  setActiveRegimen(null)
+                }}
+                className="rounded-full bg-slate-100 px-3 py-1 text-xs text-slate-700 hover:bg-slate-200"
+              >
+                关闭
+              </button>
+            </div>
+
+            <div className="mt-4 grid gap-3 md:grid-cols-[0.9fr_1.1fr]">
+              <div className="max-h-80 overflow-y-auto rounded-xl bg-slate-50 p-2">
+                {myRegimens.map((item) => {
+                  const active = activeRegimen?.id === item.id
+                  return (
+                    <button
+                      key={item.id}
+                      type="button"
+                      onClick={() => setActiveRegimen(item)}
+                      className={`mb-2 w-full rounded-lg px-3 py-2 text-left text-xs ${
+                        active ? 'bg-sky-100 text-sky-900' : 'bg-white hover:bg-slate-100'
+                      }`}
+                    >
+                      <p className="font-semibold">{item.name}</p>
+                      <p className="mt-1 text-[11px] text-slate-500">
+                        {item.medications.length} 项 · {new Date(item.createdAt).toLocaleString()}
+                      </p>
+                    </button>
+                  )
+                })}
+              </div>
+
+              <div className="rounded-xl bg-slate-50 p-3">
+                {activeRegimen ? (
+                  <div>
+                    <p className="text-sm font-semibold text-slate-900">{activeRegimen.name}</p>
+                    <p className="mt-1 text-[11px] text-slate-500">
+                      医生为您创建于 {new Date(activeRegimen.createdAt).toLocaleString()}
+                    </p>
+                    <ul className="mt-3 space-y-2 text-xs">
+                      {activeRegimen.medications.map((med, idx) => (
+                        <li key={`${med.name}-${idx}`} className="rounded-lg bg-white p-2">
+                          <p className="font-semibold text-slate-900">{med.name}</p>
+                          <p className="mt-1 text-slate-600">
+                            剂量：{med.dose} · 用法：{med.usage}
+                          </p>
+                          {med.note && (
+                            <p className="mt-1 text-[11px] text-slate-500">备注：{med.note}</p>
+                          )}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                ) : (
+                  <p className="text-xs text-slate-500">请先点击左侧某个方案查看详细内容。</p>
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

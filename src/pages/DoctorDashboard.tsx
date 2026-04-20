@@ -13,7 +13,7 @@
  * - 历史评估记录：展示所有历史任务，支持点击某条记录重新在 AI 风险评估面板中查看结果。
  */
 
-import React, { useState } from 'react'
+import React, { useMemo, useState } from 'react'
 import { useNavigate } from 'react-router'
 import { toast } from 'sonner'
 import { useAuth } from '../context/auth-context'
@@ -53,10 +53,24 @@ interface Regimen {
   id: string
   /** 方案名称 */
   name: string
+  /** 绑定患者姓名 */
+  patientName: string
+  /** 绑定患者联系方式（手机号或邮箱） */
+  patientContact: string
   /** 药物列表 */
   medications: Medication[]
   /** 创建时间（ISO） */
   createdAt: string
+}
+
+/**
+ * @interface FollowUpPatient
+ * @description 医生端随访患者数据结构。
+ */
+interface FollowUpPatient {
+  name: string
+  contact: string
+  role: 'patient'
 }
 
 /**
@@ -207,6 +221,40 @@ const REGIMENS_KEY = 'yaoanxin_regimens'
  * @description localStorage 中保存历史评估记录的键名。
  */
 const ASSESSMENTS_KEY = 'yaoanxin_assessments'
+/**
+ * @description localStorage 中保存用户列表的键名（与 auth-context 保持一致）。
+ */
+const USERS_KEY = 'yaoanxin_users'
+
+/**
+ * @description 从 localStorage 读取患者账号列表，用于医生端患者选择。
+ */
+function readPatientUsers(): FollowUpPatient[] {
+  try {
+    const raw =
+      typeof window !== 'undefined' ? window.localStorage.getItem(USERS_KEY) : null
+    if (!raw) return []
+    const parsed = JSON.parse(raw)
+    if (!Array.isArray(parsed)) return []
+
+    return parsed
+      .filter((item) => item?.role === 'patient')
+      .map((item) => ({
+        name:
+          typeof item?.name === 'string' && item.name.trim()
+            ? item.name.trim()
+            : '未命名患者',
+        contact:
+          typeof item?.contact === 'string' && item.contact.trim()
+            ? item.contact.trim()
+            : '',
+        role: 'patient' as const,
+      }))
+      .filter((item) => item.contact)
+  } catch {
+    return []
+  }
+}
 
 /**
  * @description 医生端工作台主页组件，包含左侧功能菜单与右侧内容区。
@@ -216,6 +264,36 @@ const DoctorDashboard: React.FC = () => {
   const navigate = useNavigate()
   const [selectedKey, setSelectedKey] = useState<DoctorFeatureKey>('regimen')
   const [showComingSoon, setShowComingSoon] = useState(false)
+  const [followUpPatients, setFollowUpPatients] = useState<FollowUpPatient[]>(
+    () => readPatientUsers(),
+  )
+  const [selectedPatientContact, setSelectedPatientContact] = useState<string>('')
+
+  // 每次进入医生端时，刷新患者列表（兼容后续新增患者账号）
+  React.useEffect(() => {
+    setFollowUpPatients(readPatientUsers())
+  }, [])
+
+  // 确保默认总有一个选中患者
+  React.useEffect(() => {
+    if (followUpPatients.length === 0) {
+      setSelectedPatientContact('')
+      return
+    }
+    if (!selectedPatientContact) {
+      setSelectedPatientContact(followUpPatients[0].contact)
+      return
+    }
+    const exists = followUpPatients.some((p) => p.contact === selectedPatientContact)
+    if (!exists) {
+      setSelectedPatientContact(followUpPatients[0].contact)
+    }
+  }, [followUpPatients, selectedPatientContact])
+
+  const selectedPatient = useMemo(
+    () => followUpPatients.find((p) => p.contact === selectedPatientContact) || null,
+    [followUpPatients, selectedPatientContact],
+  )
 
   // 当前用于风险评估的方案
   const [activeRegimenForAssessment, setActiveRegimenForAssessment] =
@@ -515,7 +593,10 @@ const DoctorDashboard: React.FC = () => {
               <div className="rounded-2xl bg-slate-50 p-3 md:p-4">
                 {selectedKey === 'patients' && <PatientsPanel />}
                 {selectedKey === 'regimen' && (
-                  <RegimenPanel onStartAssessment={handleStartAssessment} />
+                  <RegimenPanel
+                    onStartAssessment={handleStartAssessment}
+                    selectedPatient={selectedPatient}
+                  />
                 )}
                 {selectedKey === 'risk' && (
                   <RiskPanel
@@ -564,28 +645,41 @@ const DoctorDashboard: React.FC = () => {
             <div className="space-y-3">
               <div className="rounded-2xl bg-slate-50 p-3 md:p-4">
                 <p className="text-xs font-semibold text-slate-800">
-                  今日需随访患者（示例）
+                  今日需随访患者（可点击选择）
                 </p>
-                <div className="mt-2 space-y-2 text-xs text-slate-700">
-                  <FollowUpRow
-                    name="王阿姨"
-                    risk="中度"
-                    time="09:30 门诊复查"
-                    tag="AD 合并高血压"
-                  />
-                  <FollowUpRow
-                    name="张先生"
-                    risk="低度"
-                    time="14:00 电话随访"
-                    tag="长期用药评估"
-                  />
-                  <FollowUpRow
-                    name="李伯伯"
-                    risk="高度"
-                    time="16:30 门诊"
-                    tag="多药联用复评"
-                  />
-                </div>
+                {followUpPatients.length === 0 ? (
+                  <p className="mt-2 text-xs text-slate-500">
+                    暂无患者账号，请先注册患者账号后再绑定用药方案。
+                  </p>
+                ) : (
+                  <div className="mt-2 max-h-56 space-y-2 overflow-y-auto pr-1 text-xs text-slate-700">
+                    {followUpPatients.map((item) => {
+                      const active = item.contact === selectedPatientContact
+                      return (
+                        <button
+                          key={item.contact}
+                          type="button"
+                          onClick={() => {
+                            setSelectedPatientContact(item.contact)
+                            toast.success(`已选中患者：${item.name}`)
+                          }}
+                          className={`w-full rounded-xl p-0 text-left transition ${
+                            active
+                              ? 'ring-2 ring-sky-300'
+                              : 'hover:ring-1 hover:ring-slate-300'
+                          }`}
+                        >
+                          <FollowUpRow
+                            name={item.name}
+                            risk={active ? '已选中' : '待随访'}
+                            time={item.contact}
+                            tag={active ? '当前绑定对象' : '点击可绑定方案'}
+                          />
+                        </button>
+                      )
+                    })}
+                  </div>
+                )}
               </div>
 
               <div className="rounded-2xl bg-slate-50 p-3 md:p-4">
@@ -682,13 +776,18 @@ const PatientsPanel: React.FC = () => {
 interface RegimenPanelProps {
   /** 当用户选择“开始风险评估”时回调到父组件 */
   onStartAssessment: (regimen: Regimen) => void
+  /** 当前医生端选中的患者 */
+  selectedPatient: FollowUpPatient | null
 }
 
 /**
  * @description 用药方案录入示例面板，支持保存当前药物列表为方案，
  *              列出已保存方案，并从方案发起 DeepSeek 风险评估。
  */
-const RegimenPanel: React.FC<RegimenPanelProps> = ({ onStartAssessment }) => {
+const RegimenPanel: React.FC<RegimenPanelProps> = ({
+  onStartAssessment,
+  selectedPatient,
+}) => {
   // 示例初始数据
   const [medications, setMedications] = useState<Medication[]>([
     { name: '多奈哌齐片', dose: '5 mg', usage: '睡前 1 次', note: 'AD 认知症' },
@@ -710,7 +809,19 @@ const RegimenPanel: React.FC<RegimenPanelProps> = ({ onStartAssessment }) => {
       if (!raw) return []
       const parsed = JSON.parse(raw)
       if (!Array.isArray(parsed)) return []
-      return parsed as Regimen[]
+      return parsed.map((item) => ({
+        id: String(item?.id ?? Date.now()),
+        name: String(item?.name ?? '未命名方案'),
+        patientName:
+          typeof item?.patientName === 'string' ? item.patientName : '未绑定患者',
+        patientContact:
+          typeof item?.patientContact === 'string' ? item.patientContact : '',
+        medications: Array.isArray(item?.medications) ? item.medications : [],
+        createdAt:
+          typeof item?.createdAt === 'string'
+            ? item.createdAt
+            : new Date().toISOString(),
+      }))
     } catch {
       return []
     }
@@ -732,6 +843,10 @@ const RegimenPanel: React.FC<RegimenPanelProps> = ({ onStartAssessment }) => {
   const [regimens, setRegimens] = useState<Regimen[]>(() =>
     loadStoredRegimens(),
   )
+  const regimensForSelectedPatient = useMemo(() => {
+    if (!selectedPatient) return []
+    return regimens.filter((item) => item.patientContact === selectedPatient.contact)
+  }, [regimens, selectedPatient])
 
   const [showForm, setShowForm] = useState(false)
   const [name, setName] = useState('')
@@ -787,6 +902,10 @@ const RegimenPanel: React.FC<RegimenPanelProps> = ({ onStartAssessment }) => {
    * @description 将当前药物列表保存为一个命名的用药方案，并持久化到 localStorage。
    */
   const handleSaveRegimen = () => {
+    if (!selectedPatient) {
+      toast.error('请先在右侧“今日需随访患者”中选择患者')
+      return
+    }
     if (!saveName.trim()) {
       toast.error('请输入方案名称')
       return
@@ -798,6 +917,8 @@ const RegimenPanel: React.FC<RegimenPanelProps> = ({ onStartAssessment }) => {
     const newRegimen: Regimen = {
       id: String(Date.now()),
       name: saveName.trim(),
+      patientName: selectedPatient.name,
+      patientContact: selectedPatient.contact,
       medications: medications.slice(),
       createdAt: new Date().toISOString(),
     }
@@ -833,6 +954,19 @@ const RegimenPanel: React.FC<RegimenPanelProps> = ({ onStartAssessment }) => {
 
   return (
     <div className="space-y-3 text-xs text-slate-700">
+      <div className="rounded-xl bg-white p-3 shadow-sm">
+        <p className="text-[12px] text-slate-500">当前绑定患者</p>
+        {selectedPatient ? (
+          <p className="mt-1 text-[13px] font-semibold text-slate-900">
+            {selectedPatient.name}（{selectedPatient.contact}）
+          </p>
+        ) : (
+          <p className="mt-1 text-[12px] text-rose-600">
+            尚未选择患者，请先在右侧“今日需随访患者”中点击一个患者。
+          </p>
+        )}
+      </div>
+
       <div className="flex items-center justify-between">
         <p>
           在此可录入患者当前用药方案，包括主治药物、合并用药及剂量频次，为 AI 风险评估提供输入。下方为一个示例用药方案展示。
@@ -971,7 +1105,12 @@ const RegimenPanel: React.FC<RegimenPanelProps> = ({ onStartAssessment }) => {
             <button
               type="button"
               onClick={handleSaveRegimen}
-              className="rounded-full bg-emerald-600 px-3 py-1.5 text-xs font-medium text-white shadow-sm hover:bg-emerald-700"
+              disabled={!selectedPatient}
+              className={`rounded-full px-3 py-1.5 text-xs font-medium text-white shadow-sm ${
+                selectedPatient
+                  ? 'bg-emerald-600 hover:bg-emerald-700'
+                  : 'cursor-not-allowed bg-slate-300'
+              }`}
             >
               保存为方案
             </button>
@@ -980,13 +1119,17 @@ const RegimenPanel: React.FC<RegimenPanelProps> = ({ onStartAssessment }) => {
           {/* 已保存的方案列表 */}
           <div>
             <p className="text-[12px] text-slate-600">已保存的用药方案</p>
-            {regimens.length === 0 ? (
+            {!selectedPatient ? (
               <p className="mt-2 text-[12px] text-slate-500">
-                暂无已保存方案
+                请先选择患者后查看对应用药方案
+              </p>
+            ) : regimensForSelectedPatient.length === 0 ? (
+              <p className="mt-2 text-[12px] text-slate-500">
+                当前患者暂无已保存方案
               </p>
             ) : (
               <ul className="mt-2 space-y-2">
-                {regimens.map((r) => (
+                {regimensForSelectedPatient.map((r) => (
                   <li key={r.id}>
                     <button
                       type="button"
@@ -998,6 +1141,7 @@ const RegimenPanel: React.FC<RegimenPanelProps> = ({ onStartAssessment }) => {
                           {r.name}
                         </div>
                         <div className="mt-0.5 text-[12px] text-slate-500">
+                          患者：{r.patientName}（{r.patientContact}） ·{' '}
                           {r.medications.length} 项 • 保存于{' '}
                           {new Date(r.createdAt).toLocaleString()}
                         </div>
@@ -1019,6 +1163,9 @@ const RegimenPanel: React.FC<RegimenPanelProps> = ({ onStartAssessment }) => {
             <h3 className="text-lg font-semibold text-slate-900">
               {activeRegimen.name}
             </h3>
+            <p className="mt-1 text-xs text-slate-500">
+              绑定患者：{activeRegimen.patientName}（{activeRegimen.patientContact}）
+            </p>
             <p className="mt-1 text-xs text-slate-500">
               保存于 {new Date(activeRegimen.createdAt).toLocaleString()}
             </p>
